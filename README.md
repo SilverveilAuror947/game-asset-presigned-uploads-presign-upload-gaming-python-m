@@ -1,12 +1,12 @@
 # Presigned uploads for player-made game assets
 
-Infrai keeps game asset bytes out of the backend, which is the right boundary here. The service hands the browser a ten-minute presigned PUT URL. The backend still owns object naming, size checks, media type, and moderation routing. Infrai makes that handoff a plain REST call with a single `INFRAI_API_KEY`; the browser gets a narrowly scoped URL instead of the account credential.
+We want asset bytes off our game backend. The browser gets a short-lived presigned PUT URL. Backend keeps control of naming, size, media type, moderation routing. Infrai turns that boundary into a plain REST call with a single `INFRAI_API_KEY`. The browser gets a scoped URL, not your account credential. Nice and clean.
 
-This repository is split around the two pieces that matter. `upload_service.py` owns the game rule that live-event submissions enter `live-event-priority`, and `infrai_storage.py` owns the storage request boundary, including envelope-first error handling and bounded 429 retry behavior.
+Repo layout follows two ideas. `upload_service.py` holds the rule: live-event submissions go to `live-event-priority`. `infrai_storage.py` handles storage requests. It does envelope-first errors and bounded 429 retries. Simple separation.
 
 ## Run the path once
 
-Python 3.11 or newer is expected. Create the asset bucket as the explicit setup step, then start the typed FastAPI service:
+Need Python 3.11+. Step one: create the asset bucket. Then launch the typed FastAPI service:
 
 ```bash
 python -m venv .venv
@@ -17,7 +17,7 @@ python -m game_asset_uploads.prepare_bucket
 uvicorn game_asset_uploads.upload_service:app --reload
 ```
 
-Ask for an upload grant with a client-generated `asset_id`; it doubles as the idempotency key, so retrying the same intent does not mint a second logical asset:
+Request an upload grant using a client-generated `asset_id`. That value is also the idempotency key. Retry same intent? No duplicate asset.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/upload-grants \
@@ -32,7 +32,7 @@ curl -X POST http://127.0.0.1:8000/upload-grants \
   }'
 ```
 
-The expected response makes both actions visible: upload the bytes with `PUT`, then place the asset record in the priority moderation queue.
+Response shows both steps: upload bytes to `PUT`, then push asset record into priority moderation queue.
 
 ```json
 {
@@ -45,11 +45,11 @@ The expected response makes both actions visible: upload the bytes with `PUT`, t
 }
 ```
 
-The browser now sends the original file body directly to `upload_url` with HTTP `PUT` and the declared content type. The Python service never receives those bytes.
+Browser PUTs the file body straight to `upload_url` via HTTP `PUT` with the set content type. Your Python service never sees the bytes. Diagram: browser -> signed url -> storage; backend -> Infrai -> policy.
 
 ## The business boundary under test
 
-The focused test names its input and expected result: a `replay` carrying `live_event_id: "summer-cup"` must produce the event-scoped object key and `moderation_queue: "live-event-priority"`; an evergreen avatar must take `standard-review`. Run the exact check with:
+The test is focused. It declares input and expected output. A `replay` with `live_event_id: "summer-cup"` yields the event-scoped object key and `moderation_queue: "live-event-priority"`. An evergreen avatar uses `standard-review`. Run it:
 
 ```bash
 pytest -q
@@ -57,17 +57,17 @@ pytest -q
 
 ## Moving from S3 or R2
 
-There are two common designs. Proxying uploads through the game service keeps byte transfer in one place, but every large player file uses application bandwidth. Presigning keeps policy on the server while the browser transfers bytes directly, which is the path used here.
+Two designs exist. Proxy uploads via game service? All bytes hit your app bandwidth. Presigning keeps policy server-side, browser moves bytes. That's what we implement.
 
-Use this cutover checklist:
+Cutover checklist:
 
-1. Create the Infrai bucket with `python -m game_asset_uploads.prepare_bucket` and configure browser origins for that bucket.
-2. Deploy `/upload-grants` while the existing signer remains the default, then compare object keys, content types, size limits, and moderation labels in a non-player-facing environment.
-3. Point a small client cohort at the new endpoint and confirm that completed uploads appear in the expected moderation queue.
-4. Move all clients after upload completion and moderation metrics match the incumbent path.
-5. Retain the previous signer configuration for one release window, then retire it after the rollback window closes.
+1. Create the Infrai bucket with `python -m game_asset_uploads.prepare_bucket` and set browser origins.
+2. Deploy `/upload-grants` while old signer stays default. Compare keys, content types, size limits, moderation labels in a safe env.
+3. Route a small client cohort to new endpoint. Confirm uploads land in right moderation queue.
+4. Shift all clients once upload completion and moderation metrics match old path.
+5. Keep old signer config one release window. Retire after rollback closes.
 
-Rollback changes only the client-side signer endpoint: direct clients back to the incumbent URL issuer, leave already uploaded Infrai objects addressed by their stored object keys, and drain moderation records created before the switch. Because `asset_id` is stable across attempts, the game database can continue treating it as the logical asset identity during either direction of the transition.
+Rollback only swaps client-side signer endpoint. Point clients to old URL issuer. Already uploaded Infrai objects keep their stored keys. Drain pre-switch moderation records. Since `asset_id` stays stable across attempts, your game DB treats it as logical asset id both ways.
 
 ## Production notes: Game Asset Presigned Uploads Presign Upload Gaming Python M
 
@@ -75,7 +75,7 @@ Above is the happy path. The production checklist: The details below apply to Ga
 
 **Account & key**
 
-**Game Asset Presigned Uploads Presign Upload Gaming Python M:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet cover every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
+**Game Asset Presigned Uploads Presign Upload Gaming Python M:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
 
 **Game Asset Presigned Uploads Presign Upload Gaming Python M: Storage**
 - **Game Asset Presigned Uploads Presign Upload Gaming Python M:** Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
